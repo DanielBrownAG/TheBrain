@@ -1,6 +1,6 @@
 # 🧠 BasicBrainAI
 
-An innovative AI application that routes user prompts to specialized "brain regions," each with distinct personalities and expertise. Think of it as a multi-specialized AI system inspired by human brain anatomy.
+An AI application that routes user prompts to specialized "brain regions," each with distinct personalities and expertise. Think of it as a multi-specialized AI system inspired by human brain anatomy.
 
 ## Description
 
