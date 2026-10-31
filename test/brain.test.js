@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { once } = require('node:events');
 const vm = require('node:vm');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { getConfiguration } = require('../ai-client');
 const { app, getBrainUI } = require('../brain');
 
@@ -26,7 +29,7 @@ test('browser script parses and renders model output as text', () => {
 });
 
 test('browser consumes fragmented UTF-8 SSE frames safely', async () => {
-    const elements = Object.fromEntries(['send', 'response', 'prompt'].map(id => [id, { value: 'Hello' }]));
+    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat'].map(id => [id, { value: 'Hello' }]));
     const nodes = [];
     elements.response.replaceChildren = () => {};
     const text = 'data: ignored\n\n: heartbeat\n\nevent: region\ndata: {"selectedRegion":"FrontalLobe"}\n\n' +
@@ -48,6 +51,7 @@ test('browser consumes fragmented UTF-8 SSE frames safely', async () => {
         }) })
     });
     vm.runInContext(getBrainUI().match(/<script>([\s\S]*?)<\/script>/)[1], context);
+    vm.runInContext("currentSessionId = 'fixture-session'", context);
     await context.sendPrompt();
     assert.equal(nodes[0].textContent, '🧠 Triaged To: FrontalLobe');
     assert.equal(nodes[1].textContent, '🧠 <script>alert(1)</script>');
@@ -92,9 +96,10 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
     upstream.listen(0, '127.0.0.1');
     await once(upstream, 'listening');
     const previous = { ...process.env };
+    const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-test-'));
     Object.assign(process.env, {
         AI_PROVIDER: 'openai', OPENAI_API_KEY: 'fixture-key', OPENAI_MODEL: 'gpt-6-astra',
-        OPENAI_BASE_URL: `http://127.0.0.1:${upstream.address().port}/v1`
+        OPENAI_BASE_URL: `http://127.0.0.1:${upstream.address().port}/v1`, BRAIN_DATA_DIR: dataDirectory
     });
     const server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -104,10 +109,12 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
         upstream.closeAllConnections(); upstream.close();
         for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
         Object.assign(process.env, previous);
+        fs.rmSync(dataDirectory, { recursive: true, force: true });
     });
     const post = (body) => fetch(`http://127.0.0.1:${server.address().port}/brainprompt`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
+    const sessionAPI = (url = '', method = 'GET') => fetch(`http://127.0.0.1:${server.address().port}/sessions${url}`, { method });
 
     await t.test('invalid prompts and stream flags fail before API calls', async () => {
         for (const body of [{}, { prompt: 2 }, { prompt: ' ' }, { prompt: 'hi', stream: 'true' }]) {
@@ -151,6 +158,30 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
             process.env.AI_PROVIDER = 'openai';
         }
     });
+    await t.test('sessions persist, isolate context, and support clear/delete', async () => {
+        const session = await (await sessionAPI('', 'POST')).json();
+        const other = await (await sessionAPI('', 'POST')).json();
+        const first = await (await post({ prompt: 'My name is Alice', sessionId: session.id })).json();
+        assert.equal(first.sessionId, session.id);
+        await post({ prompt: 'What is my name?', sessionId: session.id });
+        for (const call of calls.slice(-2)) {
+            assert.equal(call.input[0].content, 'My name is Alice');
+            assert.equal(call.input[1].role, 'assistant');
+            assert.equal(call.input[2].role, 'user');
+            assert.equal(call.input.length, 3);
+        }
+        assert.equal((await (await sessionAPI('/' + other.id)).json()).messages.length, 0);
+        const { SessionStore } = require('../session-store');
+        assert.equal(new SessionStore().get(session.id).messages.length, 4);
+        await sessionAPI('/' + session.id + '/messages', 'DELETE');
+        assert.equal((await (await sessionAPI('/' + session.id)).json()).messages.length, 0);
+        await post({ prompt: 'Fresh start', sessionId: session.id });
+        assert.equal(typeof calls.at(-1).input, 'string');
+        assert.equal((await sessionAPI('/' + session.id, 'DELETE')).status, 204);
+        assert.equal((await sessionAPI('/' + session.id)).status, 404);
+        assert.equal((await post({ prompt: 'hi', sessionId: session.id })).status, 404);
+        assert.equal((await sessionAPI('/invalid')).status, 404);
+    });
     for (const failure of ['bad-region', 'failed', 'truncated']) {
         await t.test(`${failure} emits an error without a done event`, async () => {
             mode = failure;
@@ -161,8 +192,9 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
     }
     await t.test('deltas arrive before completion and disconnect aborts upstream', async () => {
         mode = 'paused';
+        const session = await (await sessionAPI('', 'POST')).json();
         const closed = new Promise(resolve => { upstreamClosed = resolve; });
-        const response = await post({ prompt: 'Hello', stream: true });
+        const response = await post({ prompt: 'Hello', stream: true, sessionId: session.id });
         const reader = response.body.getReader();
         let text = '';
         while (!text.includes('Hello ')) {
@@ -171,11 +203,15 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
             text += new TextDecoder().decode(chunk.value);
         }
         assert.doesNotMatch(text, /event: done/);
+        assert.equal((await post({ prompt: 'Concurrent turn', sessionId: session.id })).status, 409);
+        assert.equal((await sessionAPI('/' + session.id + '/messages', 'DELETE')).status, 409);
+        assert.equal((await sessionAPI('/' + session.id, 'DELETE')).status, 409);
         await reader.cancel();
         await Promise.race([closed, new Promise((_, reject) => {
             const timer = setTimeout(() => reject(new Error('Upstream was not cancelled')), 3000);
             timer.unref();
         })]);
         release();
+        assert.equal((await (await sessionAPI('/' + session.id)).json()).messages.length, 0);
     });
 });

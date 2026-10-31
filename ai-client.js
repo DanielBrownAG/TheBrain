@@ -24,10 +24,14 @@ function getConfiguration(env = process.env) {
     };
 }
 
-async function generateText(instructions, prompt, { onDelta, signal } = {}) {
+async function generateText(instructions, prompt, { onDelta, signal, history = [] } = {}) {
     const { model, ...configuration } = getConfiguration();
     const client = new OpenAI(configuration);
-    const request = { model, instructions, input: prompt, store: false };
+    const input = history.length ? [
+        ...history.map(({ role, content }) => ({ role, content })),
+        { role: 'user', content: prompt }
+    ] : prompt;
+    const request = { model, instructions, input, store: false };
     if (!onDelta) {
         const response = await client.responses.create(request, { signal });
         if (response.status !== 'completed') throw new Error('AI response did not complete.');

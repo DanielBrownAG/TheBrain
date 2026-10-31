@@ -110,6 +110,20 @@ Visit `http://localhost:3000/brain` to access the interactive UI where you can:
 
 ### API Endpoints
 
+### Conversation history
+
+The web interface creates conversations and lets you switch, clear, or delete them. Conversations survive browser refreshes and server restarts. Both triage and the answering region receive the last 10 completed turns from the selected conversation. Failed or cancelled turns are not saved, and concurrent writes to the same conversation return HTTP 409.
+
+History is stored as local JSON files in `data/sessions/` (excluded from Git). Set `BRAIN_DATA_DIR` to move the data directory. Each conversation retains up to 50 completed turns; older turns are discarded. The browser stores conversation IDs and titles in local storage. Clearing removes a conversation's messages; deleting removes its server file and browser entry.
+
+- `POST /sessions`: create a conversation; returns its `id` and empty `messages` (HTTP 201).
+- `GET /sessions/:id`: retrieve a conversation and its saved messages.
+- `DELETE /sessions/:id/messages`: clear its history.
+- `DELETE /sessions/:id`: delete it (HTTP 204).
+- Include `sessionId` in `/brainprompt` requests to use and save conversation context. Omit it for stateless requests.
+
+Conversation IDs act as access tokens: anyone who has an ID can read or delete that conversation. This is a local, single-user app, without account authentication. Multiple server processes sharing a data directory are not supported. The app continues to send `store: false` to the model provider; local history is managed by this application. See [OpenAI conversation state guidance](https://developers.openai.com/api/docs/guides/conversation-state).
+
 #### `POST /brainprompt`
 Submit a prompt for processing
 
