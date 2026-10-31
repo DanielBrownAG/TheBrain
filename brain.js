@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const { OpenAIClient, AzureKeyCredential } = require('@azure/openai');
+const { generateText } = require('./ai-client');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -73,37 +73,10 @@ const prompts = {
 };
 
 // ----------------------------
-// Azure OpenAI Helper
-// ----------------------------
-async function callAzureOpenAI(systemprompt, userprompt, history = []) {
-    console.log('[AZURE] Endpoint:', process.env.AZURE_OPENAI_ENDPOINT);
-    console.log('[AZURE] Deployment ID:', process.env.AZURE_OPENAI_KEY ? '***SET***' : '***NOT SET***');
-    console.log('[AZURE] Key present:', !!process.env.AZURE_OPENAI_KEY);
-    
-    const client = new OpenAIClient(
-        process.env.AZURE_OPENAI_ENDPOINT,
-        new AzureKeyCredential(process.env.AZURE_OPENAI_KEY)
-    );
-
-    const messages = [
-        { role: "system", content: systemprompt },
-        ...history,
-        { role: "user", content: userprompt }
-    ];
-
-    console.log('[AZURE] Calling API with deployment:', process.env.AZURE_DEPLOYMENT_ID);
-    const result = await client.getChatCompletions(process.env.AZURE_DEPLOYMENT_ID, messages, {});
-    const text = result.choices[0].message.content.trim();
-    console.log('[AZURE] Response received:', text.substring(0, 50) + '...');
-
-    return text;
-}
-
-// ----------------------------
 // AI Response Handler
 // ----------------------------
 async function aiRespond(systemPrompt, userPrompt) {
-    const output = await callAzureOpenAI(systemPrompt.instructions, userPrompt);
+    const output = await generateText(systemPrompt.instructions, userPrompt);
     return `🧠 [${systemPrompt.title}]: ${output}`;
 }
 
@@ -118,7 +91,7 @@ for (const region in prompts) {
 // ----------------------------
 // Prefrontal Cortex (Triage)
 // ----------------------------
-async function PrefrontalCortex(prompt) {
+async function PrefrontalCortex(prompt, options = {}) {
     const syspromp = ` 
 You are the Prefrontal Cortex. Your sole job is to act as a triage system to route the users prompt to an area of the brain which is best suited to respond to the query.
 
@@ -147,7 +120,7 @@ Analyze the user's prompt for intent, domain, emotion, or complexity, then retur
 
     const lower = `determine which part of the brain is best to respond to the user prompt of: ${prompt.toLowerCase()}`;
 
-    const output = await callAzureOpenAI(syspromp, lower);
+    const output = await generateText(syspromp, lower, options);
     console.log("PrefrontalCortex output:", output);
     return output;
 }
@@ -155,19 +128,27 @@ Analyze the user's prompt for intent, domain, emotion, or complexity, then retur
 // ----------------------------
 // Process Brain Prompt
 // ----------------------------
-async function processBrainPrompt(userPrompt) {
-    if (!userPrompt) {
-        throw new Error('Prompt is required.');
+function validatePrompt(prompt) {
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+        throw new Error('Prompt must be a non-empty string.');
     }
+}
 
-    const selectedRegion = await PrefrontalCortex(userPrompt);
-    const response = await brainFunctions[selectedRegion](userPrompt);
-
-    return {
-        triagedBy: 'PrefrontalCortex',
-        selectedRegion,
-        response
-    };
+async function processBrainPrompt(userPrompt, { onEvent, signal } = {}) {
+    validatePrompt(userPrompt);
+    const selectedRegion = (await PrefrontalCortex(userPrompt, { signal })).trim();
+    if (!Object.hasOwn(prompts, selectedRegion)) {
+        throw new Error('Triage returned an unknown brain region.');
+    }
+    const metadata = { triagedBy: 'PrefrontalCortex', selectedRegion };
+    if (onEvent) await onEvent('region', metadata);
+    const prefix = `🧠 [${prompts[selectedRegion].title}]: `;
+    if (onEvent) await onEvent('delta', { text: prefix });
+    const output = await generateText(prompts[selectedRegion].instructions, userPrompt, {
+        signal,
+        onDelta: onEvent ? (text) => onEvent('delta', { text }) : undefined
+    });
+    return { ...metadata, response: prefix + output };
 }
 
 // ----------------------------
@@ -190,23 +171,61 @@ function getBrainUI() {
       <h1>🧠 Brain AI Prompt Router</h1>
       <label for="prompt">Enter your prompt:</label>
       <input type="text" id="prompt" placeholder="e.g. Can you help me design a music-based game?" />
-      <button onclick="sendPrompt()">Send to Brain</button>
+      <button id="send" onclick="sendPrompt()">Send to Brain</button>
 
       <div id="response"></div>
 
       <script>
         async function sendPrompt() {
-          const prompt = document.getElementById('prompt').value;
-          const res = await fetch('/brainprompt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt })
-          });
-
-          const data = await res.json();
-          document.getElementById('response').innerHTML = 
-            '<h3>🧠 Triaged To: ' + data.selectedRegion + '</h3>' +
-            '<p>' + data.response + '</p>';
+          const button = document.getElementById('send');
+          const container = document.getElementById('response');
+          const heading = document.createElement('h3');
+          const answer = document.createElement('p');
+          answer.style.whiteSpace = 'pre-wrap';
+          heading.textContent = 'Routing your prompt…';
+          container.replaceChildren(heading, answer);
+          button.disabled = true;
+          let reader;
+          try {
+            const res = await fetch('/brainprompt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt: document.getElementById('prompt').value, stream: true })
+            });
+            if (!res.ok) throw new Error((await res.json()).error);
+            reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let completed = false;
+            while (true) {
+              const { value, done } = await reader.read();
+              buffer += decoder.decode(value, { stream: !done });
+              let boundary;
+              while ((boundary = buffer.indexOf('\\n\\n')) !== -1) {
+                const frame = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                const lines = frame.split('\\n');
+                const event = lines.find(line => line.startsWith('event: '))?.slice(7);
+                const raw = lines.find(line => line.startsWith('data: '))?.slice(6);
+                if (!raw || !['region', 'delta', 'error', 'done'].includes(event)) continue;
+                const data = JSON.parse(raw);
+                if (event === 'region') heading.textContent = '🧠 Triaged To: ' + data.selectedRegion;
+                if (event === 'delta') answer.textContent += data.text;
+                if (event === 'error') throw new Error(data.error);
+                if (event === 'done') {
+                  completed = true;
+                  answer.textContent = data.response;
+                }
+              }
+              if (done) break;
+            }
+            if (!completed) throw new Error('Connection ended before the response completed.');
+          } catch (error) {
+            heading.textContent = 'Error: ' + error.message;
+          } finally {
+            if (reader) await reader.cancel().catch(() => {});
+            button.disabled = false;
+          }
         }
       </script>
     </body>
@@ -220,20 +239,55 @@ function getBrainUI() {
 
 // Brain Prompt Endpoint
 app.post('/brainprompt', async (req, res) => {
-    console.log('[REQUEST] Received:', req.body);
-    const userPrompt = req.body.prompt;
-    console.log('[REQUEST] Prompt value:', userPrompt);
-
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
     try {
-        console.log('[PROCESS] Starting processBrainPrompt...');
-        const result = await processBrainPrompt(userPrompt);
-        console.log('[PROCESS] Success:', result);
-        res.json(result);
+        validatePrompt(req.body?.prompt);
+        if (req.body.stream !== undefined && typeof req.body.stream !== 'boolean') {
+            throw new Error('stream must be a boolean.');
+        }
     } catch (error) {
-        console.error('[ERROR] Full error:', error);
-        console.error('[ERROR] Message:', error.message);
-        console.error('[ERROR] Stack:', error.stack);
-        res.status(400).json({ error: error.message, details: error.toString() });
+        return res.status(400).json({ error: error.message });
+    }
+    const streaming = req.body.stream === true;
+    if (streaming) {
+        res.set({
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        res.flushHeaders();
+    }
+    const sendEvent = (event, data) => {
+        if (!res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    // Keep proxies from timing out while triage/reasoning is running.
+    const heartbeat = streaming ? setInterval(() => {
+        if (!res.destroyed) res.write(': heartbeat\n\n');
+    }, 15000) : undefined;
+    try {
+        const result = await processBrainPrompt(req.body.prompt, {
+            signal: controller.signal,
+            onEvent: streaming ? sendEvent : undefined
+        });
+        if (streaming) {
+            sendEvent('done', result);
+            res.end();
+        } else {
+            res.json(result);
+        }
+    } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error('[AI ERROR]', error.message);
+        if (streaming) {
+            sendEvent('error', { error: 'Unable to complete the AI response. Please try again.' });
+            res.end();
+        } else {
+            res.status(502).json({ error: 'Unable to complete the AI response. Please try again.' });
+        }
+    } finally {
+        clearInterval(heartbeat);
     }
 });
 

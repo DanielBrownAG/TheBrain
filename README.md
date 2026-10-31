@@ -4,7 +4,7 @@ An AI application that routes user prompts to specialized "brain regions," each 
 
 ## Description
 
-BasicBrainAI uses Azure OpenAI to intelligently triage user prompts to the most appropriate brain region for handling. Each region is equipped with specialized instructions that shape how it responds to queries.
+BasicBrainAI uses Azure OpenAI or the OpenAI API to intelligently triage user prompts to the most appropriate brain region for handling. Each region is equipped with specialized instructions that shape how it responds to queries. Responses stream into the web interface as they are generated.
 
 ## What It Does
 
@@ -51,8 +51,8 @@ Specialized Response
 
 ### Prerequisites
 
-- Node.js >= 14.0.0
-- An Azure OpenAI instance with API credentials
+- Node.js >= 20.0.0
+- An Azure OpenAI deployment supporting the Responses API, or an OpenAI API key
 
 ### Installation
 
@@ -62,13 +62,26 @@ Specialized Response
    npm install
    ```
 
-3. Create a `.env` file with your Azure OpenAI credentials:
+3. Copy `.env.example` to `.env` and enter your Azure OpenAI credentials:
    ```
+   AI_PROVIDER=azure
    AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
    AZURE_OPENAI_KEY=<your-api-key>
    AZURE_DEPLOYMENT_ID=<your-deployment-id>
    PORT=3000
    ```
+
+   The app uses Azure's `/openai/v1/` endpoint and passes `AZURE_DEPLOYMENT_ID` as the model. Existing Azure environment variable names still work; `AI_PROVIDER` is optional when an Azure endpoint is set.
+
+   To use the OpenAI API instead:
+   ```dotenv
+   AI_PROVIDER=openai
+   OPENAI_API_KEY=<your-api-key>
+   OPENAI_MODEL=gpt-6-astra
+   PORT=3000
+   ```
+
+   `OPENAI_MODEL` accepts exact model IDs, including GPT-6 variants and later models that support the Responses API, without a hardcoded allowlist. The OpenAI default is `gpt-6-astra`; Azure always requires an existing deployment name. Model and regional availability depend on your provider and account. `OPENAI_BASE_URL` optionally overrides the OpenAI API base URL.
 
 ### Running the Application
 
@@ -93,6 +106,7 @@ Visit `http://localhost:3000/brain` to access the interactive UI where you can:
 - Send it to the Brain AI system
 - View which region triaged your request
 - Read the specialized response
+- Watch response text arrive incrementally after triage finishes
 
 ### API Endpoints
 
@@ -126,6 +140,24 @@ Health check endpoint
 }
 ```
 
+### Streaming API
+
+Include `"stream": true` in `POST /brainprompt` to receive server-sent events instead of JSON. For example:
+
+```bash
+curl -N http://localhost:3000/brainprompt -H "Content-Type: application/json" -d '{"prompt":"Help me solve a math problem","stream":true}'
+```
+
+Events arrive in this order:
+
+- `region`: `{ "triagedBy": "PrefrontalCortex", "selectedRegion": "FrontalLobe" }`
+- `delta`: `{ "text": "..." }` for each response fragment (including the region prefix)
+- `done`: the same complete object as the JSON response above
+
+Failures after streaming starts emit an `error` event with an `error` message and close the stream without `done`. Comment heartbeats keep the connection alive during triage/reasoning. Disconnecting cancels upstream generation. Omitting `stream`, or setting it to `false`, retains the JSON contract. Invalid prompts or stream flags return HTTP 400; upstream failures in JSON mode return HTTP 502.
+
+The implementation follows the [OpenAI Responses streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses) and [Azure OpenAI v1 API guidance](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle).
+
 ## Project Structure
 
 ```
@@ -141,7 +173,7 @@ BasicBrainAI/
 - **express** - Web framework
 - **body-parser** - Request parsing middleware
 - **dotenv** - Environment variable management
-- **@azure/openai** - Azure OpenAI SDK
+- **openai** - Responses API SDK for OpenAI and Azure OpenAI
 
 ## Development
 
@@ -152,6 +184,8 @@ npm run dev
 
 This uses `nodemon` to watch for file changes and automatically restart the server.
 
+Run `npm test` for local integration tests covering JSON responses, incremental streaming, validation, upstream failures, and disconnect cancellation. Tests use a local API fixture and do not require credentials or incur API charges.
+
 ## Features
 
 ✨ **Multi-Specialized AI** - 14 distinct brain regions with unique personalities
@@ -159,7 +193,7 @@ This uses `nodemon` to watch for file changes and automatically restart the serv
 🎨 **Creative & Analytical** - Balances both left and right hemisphere thinking
 📚 **Memory & Context** - Specialized memory and historical recall
 🛡️ **Emotional Intelligence** - Limbic system for emotional understanding
-⚡ **Instant Responses** - Fast Azure OpenAI integration
+⚡ **Streaming Responses** - Incremental output through the Responses API
 
 ## Example Prompts
 
