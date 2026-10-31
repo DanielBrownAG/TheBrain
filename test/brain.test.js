@@ -29,7 +29,7 @@ test('browser script parses and renders model output as text', () => {
 });
 
 test('browser consumes fragmented UTF-8 SSE frames safely', async () => {
-    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat'].map(id => [id, { value: 'Hello' }]));
+    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'contributions', 'status'].map(id => [id, { value: 'Hello', replaceChildren() {} }]));
     const nodes = [];
     elements.response.replaceChildren = () => {};
     const text = 'data: ignored\n\n: heartbeat\n\nevent: region\ndata: {"selectedRegion":"FrontalLobe"}\n\n' +
@@ -75,7 +75,14 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
         const triage = data.instructions.includes('sole job');
         if (!data.stream) {
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify(output(triage ? (mode === 'bad-region' ? 'constructor' : 'FrontalLobe') : 'Hello 🧠')));
+            let text = triage ? (mode === 'bad-region' ? 'constructor' : 'FrontalLobe') : 'Hello 🧠';
+            if (triage && data.instructions.includes('JSON array')) {
+                text = mode === 'bad-collaboration' ? '["FrontalLobe","FrontalLobe"]' : '["RightHemisphere","FrontalLobe"]';
+                if (mode === 'three-regions') text = '["RightHemisphere","FrontalLobe","Cerebellum"]';
+            }
+            const response = output(text);
+            if (mode === 'draft-failure' && !triage) response.status = 'failed';
+            res.end(JSON.stringify(response));
             return;
         }
         res.setHeader('Content-Type', 'text/event-stream');
@@ -117,7 +124,7 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
     const sessionAPI = (url = '', method = 'GET') => fetch(`http://127.0.0.1:${server.address().port}/sessions${url}`, { method });
 
     await t.test('invalid prompts and stream flags fail before API calls', async () => {
-        for (const body of [{}, { prompt: 2 }, { prompt: ' ' }, { prompt: 'hi', stream: 'true' }]) {
+        for (const body of [{}, { prompt: 2 }, { prompt: ' ' }, { prompt: 'hi', stream: 'true' }, { prompt: 'hi', collaborate: 'true' }]) {
             assert.equal((await post(body)).status, 400);
         }
         assert.equal(calls.length, 0);
@@ -181,6 +188,43 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
         assert.equal((await sessionAPI('/' + session.id)).status, 404);
         assert.equal((await post({ prompt: 'hi', sessionId: session.id })).status, 404);
         assert.equal((await sessionAPI('/invalid')).status, 404);
+    });
+    await t.test('collaboration gathers perspectives and synthesizes a streamed answer', async () => {
+        const before = calls.length;
+        const session = await (await sessionAPI('', 'POST')).json();
+        const response = await post({ prompt: 'Design and review a game', collaborate: true, stream: true, sessionId: session.id });
+        const frames = (await response.text()).split('\n\n').filter(frame => frame.startsWith('event:'));
+        assert.deepEqual(frames.map(frame => frame.split('\n')[0]), [
+            'event: region', 'event: contributor', 'event: contribution', 'event: contributor', 'event: contribution',
+            'event: delta', 'event: delta', 'event: delta', 'event: done'
+        ]);
+        const result = JSON.parse(frames.at(-1).split('\ndata: ')[1]);
+        assert.deepEqual(result.selectedRegions, ['RightHemisphere', 'FrontalLobe']);
+        assert.equal(result.contributions.length, 2);
+        assert.equal(calls.length - before, 4);
+        assert.match(calls.at(-1).instructions, /Combine the supplied perspectives/);
+        assert.equal(JSON.parse(calls.at(-1).input).perspectives.length, 2);
+        assert.equal((await (await sessionAPI('/' + session.id)).json()).messages[1].contributions.length, 2);
+        const json = await (await post({ prompt: 'Design a game', collaborate: true })).json();
+        assert.equal(json.contributions.length, 2);
+        assert.match(json.response, /Collaboration: Right Hemisphere, Frontal Lobe/);
+    });
+    for (const failure of ['bad-collaboration', 'draft-failure']) {
+        await t.test(`${failure} does not save an incomplete collaborative turn`, async () => {
+            mode = failure;
+            const session = await (await sessionAPI('', 'POST')).json();
+            const text = await (await post({ prompt: 'Hello', collaborate: true, stream: true, sessionId: session.id })).text();
+            assert.match(text, /event: error/);
+            assert.doesNotMatch(text, /event: done/);
+            assert.equal((await (await sessionAPI('/' + session.id)).json()).messages.length, 0);
+        });
+    }
+    await t.test('three-region collaboration is bounded to five calls', async () => {
+        mode = 'three-regions';
+        const before = calls.length;
+        const result = await (await post({ prompt: 'Design a game', collaborate: true })).json();
+        assert.equal(result.contributions.length, 3);
+        assert.equal(calls.length - before, 5);
     });
     for (const failure of ['bad-region', 'failed', 'truncated']) {
         await t.test(`${failure} emits an error without a done event`, async () => {

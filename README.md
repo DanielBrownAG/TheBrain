@@ -154,6 +154,14 @@ Health check endpoint
 }
 ```
 
+### Collaboration between regions
+
+Enable **Collaborate across 2–3 regions** in the UI, or send `"collaborate": true` to `/brainprompt`. Triage selects two or three distinct complementary regions, each drafts a perspective, and the Cortex combines them into one answer. The final synthesis streams to the browser; expandable perspectives show each region's contribution and are saved with the conversation.
+
+Collaboration uses 4–5 model calls per prompt (triage, 2–3 perspectives, synthesis), compared with 2 in ordinary mode. It is off by default. It increases latency and token usage. Cancellation stops further work; failure in any stage produces an error and does not save the turn.
+
+Collaborative responses add `selectedRegions` (primary region first) and `contributions` (`region`, `text` pairs). The original `selectedRegion` field remains the primary region. Streaming adds `contributor` (work starting) and `contribution` (completed perspective) events before the final answer's `delta` events. Triage rejects duplicate, unknown, or excessive regions.
+
 ### Streaming API
 
 Include `"stream": true` in `POST /brainprompt` to receive server-sent events instead of JSON. For example:
