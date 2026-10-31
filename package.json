@@ -6,7 +6,8 @@
     "scripts": {
         "start": "node brain.js",
         "dev": "nodemon brain.js",
-        "test": "node --test"
+        "test": "node --test",
+        "eval:routing": "node eval/routing.js"
     },
     "dependencies": {
         "express": "^4.18.0",

@@ -3,6 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const { generateText } = require('./ai-client');
 const { SessionStore } = require('./session-store');
+const { randomUUID } = require('node:crypto');
 const sessions = new SessionStore();
 
 const app = express();
@@ -128,7 +129,10 @@ Choose 2 or 3 distinct complementary brain regions best suited to collaborate on
 Return only a JSON array of exact region identifiers, with the primary region first.
 Available regions: ${JSON.stringify(prompts)}. Do not include explanations or markdown.`
         : syspromp;
-    const output = await generateText(instructions, lower, options);
+    const routingInstructions = options.region
+        ? instructions + `\nThe user chose ${options.region} as the primary region. Put it first in the array.`
+        : instructions;
+    const output = await generateText(routingInstructions, lower, options);
     console.log("PrefrontalCortex output:", output);
     return output;
 }
@@ -142,19 +146,28 @@ function validatePrompt(prompt) {
     }
 }
 
-async function processBrainPrompt(userPrompt, { onEvent, signal, history = [], collaborate = false } = {}) {
+function validateRegion(region) {
+    if (region !== undefined && (typeof region !== 'string' || !Object.hasOwn(prompts, region))) {
+        throw Object.assign(new Error('region must be a known brain region identifier.'), { status: 400 });
+    }
+}
+
+async function processBrainPrompt(userPrompt, { onEvent, signal, history = [], collaborate = false, region } = {}) {
     validatePrompt(userPrompt);
-    const routed = (await PrefrontalCortex(userPrompt, { signal, history, collaborate })).trim();
+    validateRegion(region);
+    const routed = region && !collaborate ? region
+        : (await PrefrontalCortex(userPrompt, { signal, history, collaborate, region })).trim();
     let selectedRegions;
     try { selectedRegions = collaborate ? JSON.parse(routed) : [routed]; }
     catch { throw new Error('Triage returned invalid collaboration regions.'); }
     if (!Array.isArray(selectedRegions) || selectedRegions.length < (collaborate ? 2 : 1) ||
         selectedRegions.length > (collaborate ? 3 : 1) || new Set(selectedRegions).size !== selectedRegions.length ||
-        selectedRegions.some(region => typeof region !== 'string' || !Object.hasOwn(prompts, region))) {
+        selectedRegions.some(region => typeof region !== 'string' || !Object.hasOwn(prompts, region)) ||
+        (region && selectedRegions[0] !== region)) {
         throw new Error('Triage returned an unknown brain region.');
     }
     const selectedRegion = selectedRegions[0];
-    const metadata = { triagedBy: 'PrefrontalCortex', selectedRegion };
+    const metadata = { triagedBy: region ? 'UserOverride' : 'PrefrontalCortex', selectedRegion };
     if (collaborate) metadata.selectedRegions = selectedRegions;
     if (onEvent) await onEvent('region', metadata);
     const contributions = [];
@@ -209,6 +222,8 @@ function getBrainUI() {
       <div id="history"></div>
       <label for="prompt">Enter your prompt:</label>
       <input type="text" id="prompt" placeholder="e.g. Can you help me design a music-based game?" />
+      <label for="region">Answering region</label>
+      <select id="region"><option value="">Automatic routing</option>${Object.entries(prompts).map(([id, value]) => `<option value="${id}">${value.title}</option>`).join('')}</select>
       <label><input type="checkbox" id="collaborate" style="width:auto" /> Collaborate across 2–3 regions</label>
       <p>Collaboration uses 4–5 model calls instead of 2, so it takes longer and uses more API tokens.</p>
       <button id="send" onclick="sendPrompt()">Send to Brain</button>
@@ -220,7 +235,7 @@ function getBrainUI() {
         let currentSessionId = null;
         let conversationList = [];
         function setBusy(busy) {
-          for (const id of ['send', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate']) {
+          for (const id of ['send', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'region']) {
             document.getElementById(id).disabled = busy;
           }
         }
@@ -255,6 +270,13 @@ function getBrainUI() {
               entry.style.whiteSpace = 'pre-wrap';
               entry.textContent = (message.role === 'user' ? 'You: ' : '') + message.content;
               history.append(entry);
+              if (message.role === 'assistant' && message.selectedRegion) {
+                const routing = document.createElement('p');
+                routing.textContent = 'Regions: ' + (message.selectedRegions || [message.selectedRegion]).join(', ') +
+                  (message.triagedBy === 'UserOverride' ? ' (chosen by you)' : ' (automatic)');
+                history.append(routing);
+              }
+              if (message.role === 'assistant' && message.requestId) history.append(feedbackView(message, session.id));
               for (const contribution of message.contributions || []) history.append(contributionView(contribution));
             }
             document.getElementById('response').replaceChildren();
@@ -306,8 +328,53 @@ function getBrainUI() {
           details.append(summary, text);
           return details;
         }
+        function feedbackView(message, sessionId) {
+          const wrapper = document.createElement('div');
+          const status = document.createElement('p');
+          if (message.feedback) status.textContent = 'Routing feedback saved: ' + message.feedback.expectedRegion;
+          const button = document.createElement('button');
+          button.textContent = 'Wrong region';
+          const form = document.createElement('form');
+          form.hidden = true;
+          const label = document.createElement('label');
+          label.textContent = 'Which region should have handled this?';
+          const select = document.createElement('select');
+          select.setAttribute('aria-label', 'Correct brain region');
+          for (const option of document.getElementById('region').options) {
+            if (!option.value || option.value === message.selectedRegion) continue;
+            const copy = document.createElement('option');
+            copy.value = option.value;
+            copy.textContent = option.textContent;
+            select.append(copy);
+          }
+          if (message.feedback) select.value = message.feedback.expectedRegion;
+          const note = document.createElement('textarea');
+          note.placeholder = 'Why this region? (optional)';
+          note.setAttribute('aria-label', 'Routing feedback note');
+          note.maxLength = 1000;
+          note.value = message.feedback?.note || '';
+          const save = document.createElement('button');
+          save.textContent = 'Save routing feedback';
+          save.type = 'submit';
+          form.append(label, select, note, save);
+          button.onclick = () => { form.hidden = !form.hidden; };
+          form.onsubmit = async (event) => {
+            event.preventDefault();
+            save.disabled = true;
+            try {
+              await api('/sessions/' + sessionId + '/feedback/' + message.requestId, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expectedRegion: select.value, note: note.value })
+              });
+              status.textContent = 'Routing feedback saved: ' + select.value;
+              form.hidden = true;
+            } catch (error) { status.textContent = error.message; }
+            finally { save.disabled = false; }
+          };
+          wrapper.append(button, form, status);
+          return wrapper;
+        }
         async function sendPrompt() {
-          const button = document.getElementById('send');
           const container = document.getElementById('response');
           const heading = document.createElement('h3');
           const answer = document.createElement('p');
@@ -324,7 +391,7 @@ function getBrainUI() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ prompt: document.getElementById('prompt').value, stream: true, sessionId: currentSessionId,
-                collaborate: document.getElementById('collaborate').checked })
+                collaborate: document.getElementById('collaborate').checked, region: document.getElementById('region').value || undefined })
             });
             if (!res.ok) throw new Error((await res.json()).error);
             reader = res.body.getReader();
@@ -343,7 +410,8 @@ function getBrainUI() {
                 const raw = lines.find(line => line.startsWith('data: '))?.slice(6);
                 if (!raw || !['region', 'contributor', 'contribution', 'delta', 'error', 'done'].includes(event)) continue;
                 const data = JSON.parse(raw);
-                if (event === 'region') heading.textContent = '🧠 Triaged To: ' + (data.selectedRegions || [data.selectedRegion]).join(', ');
+                if (event === 'region') heading.textContent = '🧠 Triaged To: ' + (data.selectedRegions || [data.selectedRegion]).join(', ') +
+                  (data.triagedBy === 'UserOverride' ? ' (chosen by you)' : '');
                 if (event === 'contributor') document.getElementById('status').textContent = 'Consulting ' + data.title + '…';
                 if (event === 'contribution') document.getElementById('contributions').append(contributionView(data));
                 if (event === 'delta') {
@@ -391,6 +459,7 @@ app.post('/brainprompt', async (req, res) => {
         if (req.body.collaborate !== undefined && typeof req.body.collaborate !== 'boolean') {
             throw new Error('collaborate must be a boolean.');
         }
+        validateRegion(req.body.region);
         if (req.body.sessionId !== undefined) session = sessions.begin(req.body.sessionId);
     } catch (error) {
         return res.status(error.status || 400).json({ error: error.message });
@@ -417,10 +486,12 @@ app.post('/brainprompt', async (req, res) => {
             signal: controller.signal,
             history: session ? session.messages.slice(-20) : [],
             collaborate: req.body.collaborate === true,
+            region: req.body.region,
             onEvent: streaming ? sendEvent : undefined
         });
         controller.signal.throwIfAborted();
         if (session) {
+            result.requestId = randomUUID();
             result.sessionId = session.id;
             sessions.append(session, req.body.prompt, result);
         }
@@ -447,6 +518,26 @@ app.post('/brainprompt', async (req, res) => {
 
 app.post('/sessions', (req, res, next) => {
     try { res.status(201).json(sessions.create()); } catch (error) { next(error); }
+});
+app.put('/sessions/:id/feedback/:requestId', (req, res, next) => {
+    let session;
+    try {
+        if (!req.body?.expectedRegion) throw Object.assign(new Error('expectedRegion is required.'), { status: 400 });
+        validateRegion(req.body.expectedRegion);
+        if (req.body.note !== undefined && (typeof req.body.note !== 'string' || req.body.note.length > 1000)) {
+            throw Object.assign(new Error('note must be a string of at most 1000 characters.'), { status: 400 });
+        }
+        session = sessions.begin(req.params.id);
+        const message = session.messages.find(message => message.role === 'assistant' && message.requestId === req.params.requestId);
+        if (!message) throw Object.assign(new Error('Unknown answer.'), { status: 404 });
+        if (req.body.expectedRegion === message.selectedRegion) {
+            throw Object.assign(new Error('Choose a different region for routing feedback.'), { status: 400 });
+        }
+        message.feedback = { expectedRegion: req.body.expectedRegion, note: req.body.note || '', createdAt: new Date().toISOString() };
+        sessions.save(session);
+        res.json(message.feedback);
+    } catch (error) { next(error); }
+    finally { if (session) sessions.finish(session.id); }
 });
 app.get('/sessions/:id', (req, res, next) => {
     try { res.json(sessions.get(req.params.id)); } catch (error) { next(error); }

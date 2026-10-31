@@ -108,8 +108,6 @@ Visit `http://localhost:3000/brain` to access the interactive UI where you can:
 - Read the specialized response
 - Watch response text arrive incrementally after triage finishes
 
-### API Endpoints
-
 ### Conversation history
 
 The web interface creates conversations and lets you switch, clear, or delete them. Conversations survive browser refreshes and server restarts. Both triage and the answering region receive the last 10 completed turns from the selected conversation. Failed or cancelled turns are not saved, and concurrent writes to the same conversation return HTTP 409.
@@ -123,6 +121,8 @@ History is stored as local JSON files in `data/sessions/` (excluded from Git). S
 - Include `sessionId` in `/brainprompt` requests to use and save conversation context. Omit it for stateless requests.
 
 Conversation IDs act as access tokens: anyone who has an ID can read or delete that conversation. This is a local, single-user app, without account authentication. Multiple server processes sharing a data directory are not supported. The app continues to send `store: false` to the model provider; local history is managed by this application. See [OpenAI conversation state guidance](https://developers.openai.com/api/docs/guides/conversation-state).
+
+### API Endpoints
 
 #### `POST /brainprompt`
 Submit a prompt for processing
@@ -180,11 +180,41 @@ Failures after streaming starts emit an `error` event with an `error` message an
 
 The implementation follows the [OpenAI Responses streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses) and [Azure OpenAI v1 API guidance](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle).
 
+### Routing controls and feedback
+
+The **Answering region** dropdown lets you choose a region instead of automatic routing. In the API, pass `"region": "Cortex"` (or another exact region identifier) to `/brainprompt`. Single-region overrides skip triage and use one model call. With collaboration enabled, the chosen region must be the primary contributor; triage still chooses its partners. Responses identify overrides with `"triagedBy": "UserOverride"`.
+
+Saved answers show their regions and a **Wrong region** button. Choose a corrected region and optionally explain why. Feedback is saved on the answer and can be updated; it does not automatically change routing or train a model. Clear/delete conversation controls also remove its feedback. Older saved answers without request IDs still display but cannot receive feedback.
+
+Session-backed responses include a `requestId`. Submit feedback using `PUT /sessions/:id/feedback/:requestId`:
+
+```json
+{ "expectedRegion": "TemporalLobe", "note": "The question was about interpreting language." }
+```
+
+The corrected region must differ from the answer's primary region, and notes are limited to 1,000 characters. Feedback for unknown conversations or answers returns HTTP 404; feedback while a conversation is generating returns HTTP 409.
+
+### Routing evaluation
+
+The dataset in `eval/routing-cases.json` contains 15 examples covering all 14 regions and a contextual follow-up. Some examples accept multiple reasonable regions. Run:
+
+```bash
+npm run eval:routing
+npm run eval:routing -- --output data/evaluations/baseline.json
+npm run eval:routing -- --include-feedback --baseline data/evaluations/baseline.json --output data/evaluations/current.json
+```
+
+**These commands call the configured model and incur API usage:** one triage call per case, with no answer generation. `--include-feedback` adds corrections from local conversations and sends the associated prompt and recent context to the provider. Without it, only the built-in examples are used. Reports default to `data/evaluations/latest.json` and contain accuracy, per-case results, errors, and model information. Exit status is 1 if any case fails. A baseline comparison measures accuracy changes only on matching case IDs and expected regions. Keep baseline reports to compare changes to the routing prompt or model. Small evaluation sets indicate regressions; they do not establish general routing quality.
+
 ## Project Structure
 
 ```
 BasicBrainAI/
 ├── brain.js          # Main application file with all brain regions and routes
+├── ai-client.js      # Model/provider configuration and generation
+├── session-store.js  # Local conversation storage
+├── eval/             # Routing dataset and evaluation command
+├── test/             # Local tests (no paid API calls)
 ├── package.json      # Dependencies and scripts
 ├── public/           # Static assets (if any)
 └── README.md         # This file

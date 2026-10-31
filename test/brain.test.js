@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 const { getConfiguration } = require('../ai-client');
 const { app, getBrainUI } = require('../brain');
 
@@ -29,7 +30,8 @@ test('browser script parses and renders model output as text', () => {
 });
 
 test('browser consumes fragmented UTF-8 SSE frames safely', async () => {
-    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'contributions', 'status'].map(id => [id, { value: 'Hello', replaceChildren() {} }]));
+    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'contributions', 'status', 'region'].map(id => [id, { value: 'Hello', replaceChildren() {} }]));
+    elements.region.value = '';
     const nodes = [];
     elements.response.replaceChildren = () => {};
     const text = 'data: ignored\n\n: heartbeat\n\nevent: region\ndata: {"selectedRegion":"FrontalLobe"}\n\n' +
@@ -124,7 +126,8 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
     const sessionAPI = (url = '', method = 'GET') => fetch(`http://127.0.0.1:${server.address().port}/sessions${url}`, { method });
 
     await t.test('invalid prompts and stream flags fail before API calls', async () => {
-        for (const body of [{}, { prompt: 2 }, { prompt: ' ' }, { prompt: 'hi', stream: 'true' }, { prompt: 'hi', collaborate: 'true' }]) {
+        for (const body of [{}, { prompt: 2 }, { prompt: ' ' }, { prompt: 'hi', stream: 'true' }, { prompt: 'hi', collaborate: 'true' },
+            { prompt: 'hi', region: 'constructor' }, { prompt: 'hi', region: 5 }]) {
             assert.equal((await post(body)).status, 400);
         }
         assert.equal(calls.length, 0);
@@ -209,6 +212,60 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
         assert.equal(json.contributions.length, 2);
         assert.match(json.response, /Collaboration: Right Hemisphere, Frontal Lobe/);
     });
+    await t.test('region override bypasses triage and can fix the primary collaborator', async () => {
+        const before = calls.length;
+        const single = await (await post({ prompt: 'Hello', region: 'Brainstem' })).json();
+        assert.equal(single.selectedRegion, 'Brainstem');
+        assert.equal(single.triagedBy, 'UserOverride');
+        assert.equal(calls.length - before, 1);
+        const multiple = await (await post({ prompt: 'Hello', region: 'RightHemisphere', collaborate: true })).json();
+        assert.equal(multiple.selectedRegion, 'RightHemisphere');
+        assert.equal(multiple.triagedBy, 'UserOverride');
+        assert.match(calls.at(-4).instructions, /Put it first in the array/);
+    });
+    await t.test('feedback is validated, scoped to an answer, and removed with history', async () => {
+        const session = await (await sessionAPI('', 'POST')).json();
+        const other = await (await sessionAPI('', 'POST')).json();
+        const result = await (await post({ prompt: 'Hello', sessionId: session.id })).json();
+        assert.ok(result.requestId);
+        const feedback = (sessionId, body, requestId = result.requestId) => fetch(
+            `http://127.0.0.1:${server.address().port}/sessions/${sessionId}/feedback/${requestId}`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+            });
+        for (const body of [{}, { expectedRegion: 'Unknown' }, { expectedRegion: 'FrontalLobe' },
+            { expectedRegion: 'Cortex', note: 5 }, { expectedRegion: 'Cortex', note: 'a'.repeat(1001) }]) {
+            assert.equal((await feedback(session.id, body)).status, 400);
+        }
+        assert.equal((await feedback(other.id, { expectedRegion: 'Cortex' })).status, 404);
+        const saved = await feedback(session.id, { expectedRegion: 'Cortex', note: 'A broader reflection fits better.' });
+        assert.equal(saved.status, 200);
+        assert.equal((await saved.json()).expectedRegion, 'Cortex');
+        const stored = await (await sessionAPI('/' + session.id)).json();
+        assert.equal(stored.messages[1].feedback.note, 'A broader reflection fits better.');
+        const { feedbackCases } = require('../eval/routing');
+        assert.equal(feedbackCases(path.join(dataDirectory, 'sessions')).length, 1);
+        assert.equal(feedbackCases(path.join(dataDirectory, 'sessions'))[0].prompt, 'Hello');
+        await feedback(session.id, { expectedRegion: 'TemporalLobe', note: 'Updated correction' });
+        assert.equal(feedbackCases(path.join(dataDirectory, 'sessions')).length, 1);
+        await sessionAPI('/' + session.id + '/messages', 'DELETE');
+        assert.equal(feedbackCases(path.join(dataDirectory, 'sessions')).length, 0);
+        assert.equal((await feedback(session.id, { expectedRegion: 'Cortex' })).status, 404);
+    });
+    await t.test('routing evaluation CLI writes a report using only triage calls', async () => {
+        const reportPath = path.join(dataDirectory, 'evaluations', 'fixture.json');
+        const before = calls.length;
+        const run = await new Promise(resolve => execFile(process.execPath, ['eval/routing.js', '--output', reportPath],
+            { cwd: path.join(__dirname, '..'), env: process.env }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+        // The fixture always chooses FrontalLobe; a real evaluation should flag the other cases.
+        assert.equal(run.error.code, 1);
+        assert.match(run.stdout, /Routing: 2\/15 passed/);
+        assert.equal(calls.length - before, 15);
+        assert.ok(calls.slice(before).every(call => call.instructions.includes('sole job')));
+        const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+        assert.equal(report.total, 15);
+        assert.equal(report.model, 'gpt-6-astra');
+        assert.ok(!JSON.stringify(report).includes('fixture-key'));
+    });
     for (const failure of ['bad-collaboration', 'draft-failure']) {
         await t.test(`${failure} does not save an incomplete collaborative turn`, async () => {
             mode = failure;
@@ -250,6 +307,10 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
         assert.equal((await post({ prompt: 'Concurrent turn', sessionId: session.id })).status, 409);
         assert.equal((await sessionAPI('/' + session.id + '/messages', 'DELETE')).status, 409);
         assert.equal((await sessionAPI('/' + session.id, 'DELETE')).status, 409);
+        const feedbackWhileBusy = await fetch(`http://127.0.0.1:${server.address().port}/sessions/${session.id}/feedback/any-answer`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRegion: 'Cortex' })
+        });
+        assert.equal(feedbackWhileBusy.status, 409);
         await reader.cancel();
         await Promise.race([closed, new Promise((_, reject) => {
             const timer = setTimeout(() => reject(new Error('Upstream was not cancelled')), 3000);

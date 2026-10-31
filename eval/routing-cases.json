@@ -1,0 +1,17 @@
+[
+  { "id": "logic", "prompt": "Check whether this logical argument is valid: all cats are mammals; Felix is a cat; therefore Felix is a mammal.", "expectedRegions": ["FrontalLobe", "LeftHemisphere"] },
+  { "id": "spatial", "prompt": "Explain how to judge the position of my hand relative to my shoulder with my eyes closed.", "expectedRegions": ["ParietalLobe"] },
+  { "id": "language", "prompt": "Explain how the meaning of a sentence changes when the speaker emphasizes different words.", "expectedRegions": ["TemporalLobe", "LeftHemisphere"] },
+  { "id": "visual", "prompt": "Help me describe the visual patterns in a painting of overlapping red triangles and blue circles.", "expectedRegions": ["OccipitalLobe"] },
+  { "id": "empathy", "prompt": "I feel lonely after moving away from my family. Help me understand and cope with these feelings.", "expectedRegions": ["LimbicSystem", "Amygdala"] },
+  { "id": "coordination", "prompt": "Give me step-by-step coordination drills for learning to juggle three balls.", "expectedRegions": ["Cerebellum"] },
+  { "id": "breathing", "prompt": "Explain the automatic regulation of breathing while asleep.", "expectedRegions": ["Brainstem"] },
+  { "id": "analysis", "prompt": "Break down the arithmetic steps for calculating a 15 percent discount on 80 dollars.", "expectedRegions": ["LeftHemisphere", "FrontalLobe"] },
+  { "id": "creativity", "prompt": "Invent an imaginative theme and visual style for a surreal music festival poster.", "expectedRegions": ["RightHemisphere", "OccipitalLobe"] },
+  { "id": "reflection", "prompt": "Help me reflect on how my everyday perceptions shape my conscious experience.", "expectedRegions": ["Cortex", "Neocortex"] },
+  { "id": "abstract", "prompt": "Develop an abstract philosophical model of how personal identity changes over time.", "expectedRegions": ["Neocortex"] },
+  { "id": "memory", "prompt": "Help me reconstruct the chronological sequence of a childhood holiday from scattered memories.", "expectedRegions": ["Hippocampus"] },
+  { "id": "fear", "prompt": "Explain why sudden loud noises trigger an immediate intense fear response.", "expectedRegions": ["Amygdala", "Brainstem"] },
+  { "id": "habits", "prompt": "Help me understand how repeating the same morning routine turns it into an automatic habit.", "expectedRegions": ["BasalGanglia"] },
+  { "id": "follow-up", "prompt": "Can you give me another exercise for that?", "history": [{ "role": "user", "content": "I want to improve balance and coordination for juggling." }, { "role": "assistant", "content": "Start with a single-ball toss to practice hand-eye coordination." }], "expectedRegions": ["Cerebellum"] }
+]
