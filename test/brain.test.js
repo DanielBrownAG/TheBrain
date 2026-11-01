@@ -30,7 +30,7 @@ test('browser script parses and renders model output as text', () => {
 });
 
 test('browser consumes fragmented UTF-8 SSE frames safely', async () => {
-    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'contributions', 'status', 'region'].map(id => [id, { value: 'Hello', replaceChildren() {} }]));
+    const elements = Object.fromEntries(['send', 'response', 'prompt', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'contributions', 'status', 'region', 'stop', 'retry', 'copy'].map(id => [id, { value: 'Hello', replaceChildren() {} }]));
     elements.region.value = '';
     const nodes = [];
     elements.response.replaceChildren = () => {};
@@ -45,6 +45,7 @@ test('browser consumes fragmented UTF-8 SSE frames safely', async () => {
             createElement: () => { const node = { style: {}, textContent: '' }; nodes.push(node); return node; }
         },
         TextDecoder,
+        AbortController,
         fetch: async () => ({ ok: true, body: new ReadableStream({
             start(controller) {
                 for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
@@ -266,6 +267,34 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
         assert.equal(report.model, 'gpt-6-astra');
         assert.ok(!JSON.stringify(report).includes('fixture-key'));
     });
+    await t.test('retry replaces only the latest turn and excludes its previous answer from context', async () => {
+        const session = await (await sessionAPI('', 'POST')).json();
+        const first = await (await post({ prompt: 'First question', sessionId: session.id })).json();
+        const second = await (await post({ prompt: 'Second question', sessionId: session.id })).json();
+        const retry = await post({ prompt: 'Second question', sessionId: session.id, retryOf: second.requestId });
+        assert.equal(retry.status, 200);
+        const replacement = await retry.json();
+        assert.notEqual(replacement.requestId, second.requestId);
+        for (const call of calls.slice(-2)) {
+            assert.equal(call.input.length, 3);
+            assert.equal(call.input[0].content, 'First question');
+            assert.equal(call.input[1].role, 'assistant');
+        }
+        const stored = await (await sessionAPI('/' + session.id)).json();
+        assert.equal(stored.messages.length, 4);
+        assert.equal(stored.messages[1].requestId, first.requestId);
+        assert.equal(stored.messages[3].requestId, replacement.requestId);
+        assert.equal((await post({ prompt: 'First question', sessionId: session.id, retryOf: first.requestId })).status, 409);
+        assert.equal((await post({ prompt: 'Edited question', sessionId: session.id, retryOf: replacement.requestId })).status, 400);
+        assert.equal((await post({ prompt: 'hi', retryOf: replacement.requestId })).status, 400);
+        mode = 'draft-failure';
+        const failed = await post({ prompt: 'Second question', sessionId: session.id, retryOf: replacement.requestId });
+        assert.equal(failed.status, 502);
+        const afterFailure = await (await sessionAPI('/' + session.id)).json();
+        assert.deepEqual(afterFailure.messages, stored.messages);
+        mode = 'success';
+        assert.equal((await post({ prompt: 'Third question', sessionId: session.id })).status, 200);
+    });
     for (const failure of ['bad-collaboration', 'draft-failure']) {
         await t.test(`${failure} does not save an incomplete collaborative turn`, async () => {
             mode = failure;
@@ -291,32 +320,38 @@ test('JSON and SSE routes with the actual SDK against a local upstream', async (
             assert.doesNotMatch(text, /event: done/);
         });
     }
-    await t.test('deltas arrive before completion and disconnect aborts upstream', async () => {
-        mode = 'paused';
-        const session = await (await sessionAPI('', 'POST')).json();
-        const closed = new Promise(resolve => { upstreamClosed = resolve; });
-        const response = await post({ prompt: 'Hello', stream: true, sessionId: session.id });
-        const reader = response.body.getReader();
-        let text = '';
-        while (!text.includes('Hello ')) {
-            const chunk = await reader.read();
-            assert.equal(chunk.done, false);
-            text += new TextDecoder().decode(chunk.value);
-        }
-        assert.doesNotMatch(text, /event: done/);
-        assert.equal((await post({ prompt: 'Concurrent turn', sessionId: session.id })).status, 409);
-        assert.equal((await sessionAPI('/' + session.id + '/messages', 'DELETE')).status, 409);
-        assert.equal((await sessionAPI('/' + session.id, 'DELETE')).status, 409);
-        const feedbackWhileBusy = await fetch(`http://127.0.0.1:${server.address().port}/sessions/${session.id}/feedback/any-answer`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRegion: 'Cortex' })
+    for (const retrying of [false, true]) {
+        await t.test(retrying ? 'cancelling a retry preserves the saved answer' : 'deltas arrive before completion and disconnect aborts upstream', async () => {
+            mode = 'success';
+            const session = await (await sessionAPI('', 'POST')).json();
+            const original = retrying ? await (await post({ prompt: 'Hello', sessionId: session.id })).json() : null;
+            mode = 'paused';
+            const closed = new Promise(resolve => { upstreamClosed = resolve; });
+            const response = await post({ prompt: 'Hello', stream: true, sessionId: session.id, retryOf: original?.requestId });
+            const reader = response.body.getReader();
+            let text = '';
+            while (!text.includes('Hello ')) {
+                const chunk = await reader.read();
+                assert.equal(chunk.done, false);
+                text += new TextDecoder().decode(chunk.value);
+            }
+            assert.doesNotMatch(text, /event: done/);
+            assert.equal((await post({ prompt: 'Concurrent turn', sessionId: session.id })).status, 409);
+            assert.equal((await sessionAPI('/' + session.id + '/messages', 'DELETE')).status, 409);
+            assert.equal((await sessionAPI('/' + session.id, 'DELETE')).status, 409);
+            const feedbackWhileBusy = await fetch(`http://127.0.0.1:${server.address().port}/sessions/${session.id}/feedback/any-answer`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRegion: 'Cortex' })
+            });
+            assert.equal(feedbackWhileBusy.status, 409);
+            await reader.cancel();
+            await Promise.race([closed, new Promise((_, reject) => {
+                const timer = setTimeout(() => reject(new Error('Upstream was not cancelled')), 3000);
+                timer.unref();
+            })]);
+            release();
+            const stored = await (await sessionAPI('/' + session.id)).json();
+            assert.equal(stored.messages.length, retrying ? 2 : 0);
+            if (retrying) assert.equal(stored.messages[1].requestId, original.requestId);
         });
-        assert.equal(feedbackWhileBusy.status, 409);
-        await reader.cancel();
-        await Promise.race([closed, new Promise((_, reject) => {
-            const timer = setTimeout(() => reject(new Error('Upstream was not cancelled')), 3000);
-            timer.unref();
-        })]);
-        release();
-        assert.equal((await (await sessionAPI('/' + session.id)).json()).messages.length, 0);
-    });
+    }
 });

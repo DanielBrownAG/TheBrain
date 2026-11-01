@@ -227,6 +227,9 @@ function getBrainUI() {
       <label><input type="checkbox" id="collaborate" style="width:auto" /> Collaborate across 2–3 regions</label>
       <p>Collaboration uses 4–5 model calls instead of 2, so it takes longer and uses more API tokens.</p>
       <button id="send" onclick="sendPrompt()">Send to Brain</button>
+      <button id="stop" onclick="stopGenerating()" disabled>Stop generating</button>
+      <button id="retry" onclick="sendPrompt(true)" disabled>Retry</button>
+      <button id="copy" onclick="copyAnswer()" disabled>Copy answer</button>
 
       <div id="response"></div>
       <div id="contributions"></div>
@@ -234,9 +237,35 @@ function getBrainUI() {
       <script>
         let currentSessionId = null;
         let conversationList = [];
+        let activeRequest = null;
+        let lastAttempt = null;
+        let latestSavedRequestId = null;
+        let currentAnswer = '';
+        function showAnswer(text) {
+          currentAnswer = text;
+          document.getElementById('copy').disabled = !text;
+        }
         function setBusy(busy) {
           for (const id of ['send', 'conversation', 'new-chat', 'clear-chat', 'delete-chat', 'collaborate', 'region']) {
             document.getElementById(id).disabled = busy;
+          }
+          document.getElementById('stop').disabled = !busy || activeRequest?.completed;
+          document.getElementById('retry').disabled = busy || !lastAttempt;
+        }
+        function stopGenerating() {
+          if (!activeRequest || activeRequest.completed) return;
+          document.getElementById('stop').disabled = true;
+          document.getElementById('status').textContent = 'Stopping…';
+          activeRequest.controller.abort();
+        }
+        async function copyAnswer(text = currentAnswer) {
+          if (!text) return;
+          try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await navigator.clipboard.writeText(text);
+            document.getElementById('status').textContent = 'Answer copied.';
+          } catch {
+            document.getElementById('status').textContent = 'Could not access the clipboard. Select the answer text and copy it manually.';
           }
         }
         async function api(url, options) {
@@ -262,6 +291,16 @@ function getBrainUI() {
           try {
             const session = await api('/sessions/' + encodeURIComponent(id));
             currentSessionId = session.id;
+            const last = session.messages.at(-1);
+            const previous = session.messages.at(-2);
+            latestSavedRequestId = last?.role === 'assistant' ? last.requestId || null : null;
+            lastAttempt = latestSavedRequestId && previous?.role === 'user' ? {
+              prompt: previous.content, sessionId: session.id, retryOf: latestSavedRequestId,
+              baseRequestId: latestSavedRequestId, collaborate: !!last.selectedRegions,
+              region: last.triagedBy === 'UserOverride' ? last.selectedRegion : undefined
+            } : null;
+            showAnswer(last?.role === 'assistant' ? last.content : '');
+            document.getElementById('retry').disabled = !!activeRequest || !lastAttempt;
             rememberConversation(session);
             const history = document.getElementById('history');
             history.replaceChildren();
@@ -270,6 +309,12 @@ function getBrainUI() {
               entry.style.whiteSpace = 'pre-wrap';
               entry.textContent = (message.role === 'user' ? 'You: ' : '') + message.content;
               history.append(entry);
+              if (message.role === 'assistant') {
+                const copy = document.createElement('button');
+                copy.textContent = 'Copy answer';
+                copy.onclick = () => copyAnswer(message.content);
+                history.append(copy);
+              }
               if (message.role === 'assistant' && message.selectedRegion) {
                 const routing = document.createElement('p');
                 routing.textContent = 'Regions: ' + (message.selectedRegions || [message.selectedRegion]).join(', ') +
@@ -374,24 +419,52 @@ function getBrainUI() {
           wrapper.append(button, form, status);
           return wrapper;
         }
-        async function sendPrompt() {
+        async function sendPrompt(retry = false) {
+          if (activeRequest || (retry && !lastAttempt)) return;
+          const attempt = retry ? { ...lastAttempt } : {
+            prompt: document.getElementById('prompt').value,
+            sessionId: currentSessionId, baseRequestId: latestSavedRequestId,
+            collaborate: document.getElementById('collaborate').checked,
+            region: document.getElementById('region').value || undefined
+          };
+          if (!attempt.prompt.trim()) {
+            document.getElementById('status').textContent = 'Enter a prompt first.';
+            return;
+          }
+          const run = { controller: new AbortController(), completed: false };
+          activeRequest = run;
           const container = document.getElementById('response');
           const heading = document.createElement('h3');
           const answer = document.createElement('p');
           answer.style.whiteSpace = 'pre-wrap';
           heading.textContent = 'Routing your prompt…';
-          container.replaceChildren(heading, answer);
-          document.getElementById('contributions').replaceChildren();
           setBusy(true);
           let reader;
           try {
             if (!currentSessionId) await newConversation();
             if (!currentSessionId) throw new Error('Create a conversation before sending.');
+            run.controller.signal.throwIfAborted();
+            attempt.sessionId = currentSessionId;
+            if (retry) {
+              const session = await api('/sessions/' + currentSessionId, { signal: run.controller.signal });
+              const last = session.messages.at(-1);
+              const previous = session.messages.at(-2);
+              // A response can finish saving just as Stop disconnects the browser.
+              if (last?.requestId && last.requestId !== attempt.baseRequestId && previous?.content === attempt.prompt) {
+                attempt.retryOf = last.requestId;
+              }
+            }
+            lastAttempt = attempt;
+            showAnswer('');
+            container.replaceChildren(heading, answer);
+            document.getElementById('contributions').replaceChildren();
+            document.getElementById('status').textContent = '';
             const res = await fetch('/brainprompt', {
               method: 'POST',
+              signal: run.controller.signal,
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt: document.getElementById('prompt').value, stream: true, sessionId: currentSessionId,
-                collaborate: document.getElementById('collaborate').checked, region: document.getElementById('region').value || undefined })
+              body: JSON.stringify({ prompt: attempt.prompt, stream: true, sessionId: attempt.sessionId,
+                collaborate: attempt.collaborate, region: attempt.region, retryOf: attempt.retryOf })
             });
             if (!res.ok) throw new Error((await res.json()).error);
             reader = res.body.getReader();
@@ -416,24 +489,35 @@ function getBrainUI() {
                 if (event === 'contribution') document.getElementById('contributions').append(contributionView(data));
                 if (event === 'delta') {
                   answer.textContent += data.text;
-                  if (document.getElementById('collaborate').checked) document.getElementById('status').textContent = 'Combining perspectives…';
+                  showAnswer(answer.textContent);
+                  if (attempt.collaborate) document.getElementById('status').textContent = 'Combining perspectives…';
                 }
                 if (event === 'error') throw new Error(data.error);
                 if (event === 'done') {
                   completed = true;
+                  run.completed = true;
+                  document.getElementById('stop').disabled = true;
                   answer.textContent = data.response;
+                  showAnswer(data.response);
                   if (data.sessionId) await selectConversation(data.sessionId);
                 }
               }
               if (done) break;
             }
             if (!completed) throw new Error('Connection ended before the response completed.');
+            document.getElementById('status').textContent = 'Response complete.';
           } catch (error) {
-            heading.textContent = 'Error: ' + error.message;
+            if (run.controller.signal.aborted && !run.completed) {
+              heading.textContent = 'Generation stopped.';
+              document.getElementById('status').textContent = 'Generation stopped. Retry uses the same prompt and settings.';
+            } else {
+              heading.textContent = 'Error: ' + error.message;
+              document.getElementById('status').textContent = error.message;
+            }
           } finally {
             if (reader) await reader.cancel().catch(() => {});
+            activeRequest = null;
             setBusy(false);
-            document.getElementById('status').textContent = '';
           }
         }
       </script>
@@ -460,8 +544,22 @@ app.post('/brainprompt', async (req, res) => {
             throw new Error('collaborate must be a boolean.');
         }
         validateRegion(req.body.region);
+        if (req.body.retryOf !== undefined && (typeof req.body.retryOf !== 'string' || !req.body.sessionId)) {
+            throw new Error('retryOf requires an answer ID and a sessionId.');
+        }
         if (req.body.sessionId !== undefined) session = sessions.begin(req.body.sessionId);
+        if (req.body.retryOf !== undefined) {
+            const last = session.messages.at(-1);
+            const previous = session.messages.at(-2);
+            if (last?.role !== 'assistant' || last.requestId !== req.body.retryOf || previous?.role !== 'user') {
+                throw Object.assign(new Error('Only the latest saved answer can be retried. Refresh the conversation.'), { status: 409 });
+            }
+            if (previous.content !== req.body.prompt) throw new Error('Retry must use the original prompt.');
+            // Work on this snapshot; only a successful response replaces the saved turn.
+            session.messages = session.messages.slice(0, -2);
+        }
     } catch (error) {
+        if (session) sessions.finish(session.id);
         return res.status(error.status || 400).json({ error: error.message });
     }
     const streaming = req.body.stream === true;

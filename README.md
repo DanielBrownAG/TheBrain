@@ -107,6 +107,15 @@ Visit `http://localhost:3000/brain` to access the interactive UI where you can:
 - View which region triaged your request
 - Read the specialized response
 - Watch response text arrive incrementally after triage finishes
+- Stop generation, retry the latest prompt, and copy answers
+
+### Response controls
+
+- **Stop generating** cancels the active request during triage, collaboration, or answer streaming. Text already displayed stays visible and can be copied. Incomplete turns are not saved.
+- **Retry** resends the latest attempt with its original prompt, region, and collaboration setting, even if you have since edited the form. For a completed answer, it regenerates the latest turn using the preceding conversation context and replaces that answer only after success. Its previous feedback and perspectives are replaced too. A failed or cancelled regeneration keeps the saved answer intact. Switching or clearing conversations resets the controls to that conversation's latest answer.
+- **Copy answer** copies the latest displayed text, including partial output. Saved answers also have individual copy buttons. If the browser denies clipboard access, a message explains how to copy manually.
+
+Retry uses the normal model calls and API usage for the chosen mode. In API requests, include `retryOf` with the latest saved answer's `requestId`, its original `prompt`, and `sessionId` to regenerate that turn. A stale answer ID returns HTTP 409, and changing the original prompt returns HTTP 400. Failed attempts without a saved answer can be resubmitted normally.
 
 ### Conversation history
 
