@@ -6,7 +6,7 @@
 
 [![Node.js ≥20](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/github/license/DanielBrownAG/TheBrain)](LICENSE)
-[![Tests](https://img.shields.io/github/actions/workflow/status/DanielBrownAG/TheBrain/tests.yml?branch=main&label=tests)](https://github.com/DanielBrownAG/TheBrain/actions/workflows/tests.yml)
+[![Tests](https://github.com/DanielBrownAG/TheBrain/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/DanielBrownAG/TheBrain/actions/workflows/tests.yml)
 [![Last commit](https://img.shields.io/github/last-commit/DanielBrownAG/TheBrain)](https://github.com/DanielBrownAG/TheBrain/commits/main/)
 
 A brain-inspired AI prompt router with streaming conversations, specialist collaboration, and routing feedback. Available through a browser interface and a JSON or streaming API, using OpenAI or Azure OpenAI.
