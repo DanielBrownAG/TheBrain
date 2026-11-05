@@ -1,0 +1,12 @@
+Generated with the built-in image_gen tool. No reference images were used.
+Asset: assets/basicbrainai-logo.png
+
+Final prompt:
+
+Use case: logo-brand
+Asset type: square logo image for the README of BasicBrainAI, an open-source app that routes prompts to specialized brain regions and combines their perspectives.
+Primary request: create a distinctive, polished, compact brain symbol formed from a few broad interconnected pathways and clear junctions, suggesting several specialist regions working together. Simple silhouette, balanced geometry, deliberate negative space, crisp clean edges. It should remain recognizable at a small size in a GitHub README.
+Style/medium: flat graphic logo, minimal and vector-friendly, rendered as a high-quality raster image.
+Composition/framing: one centered symbol, generous transparent margin, square composition.
+Text: none.
+Constraints: actual transparent background; strong contrast and readable shapes on both light and dark backgrounds; no mockup, no page layout, no photographic brain, no fine circuitry, no glow, no watermark.

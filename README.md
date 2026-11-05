@@ -1,16 +1,23 @@
-# 🧠 BasicBrainAI
+<p align="center">
+  <img src="assets/basicbrainai-logo.png" alt="BasicBrainAI logo: connected pathways linking colorful brain regions" width="180" />
+</p>
 
-An AI application that routes user prompts to specialized "brain regions," each with distinct personalities and expertise. Think of it as a multi-specialized AI system inspired by human brain anatomy.
+# BasicBrainAI
+
+A brain-inspired AI prompt router with streaming conversations, specialist collaboration, and routing feedback. Available through a browser interface and a JSON or streaming API, using OpenAI or Azure OpenAI.
 
 ## Description
 
-BasicBrainAI uses Azure OpenAI or the OpenAI API to intelligently triage user prompts to the most appropriate brain region for handling. Each region is equipped with specialized instructions that shape how it responds to queries. Responses stream into the web interface as they are generated.
+BasicBrainAI routes prompts to one of 14 brain regions, each represented by a specialized instruction set. Let the Prefrontal Cortex choose a region, select one yourself, or enable collaboration to gather several perspectives and combine them into one answer.
+
+Conversation history is saved locally, and recent turns provide context for follow-up questions. You can stop generation, retry an answer, copy text, and record routing corrections. A separate evaluation command checks routing against example prompts and saved feedback.
 
 ## What It Does
 
-1. **Accepts User Prompts** - Users submit queries through a web interface
-2. **Intelligent Triaging** - A "Prefrontal Cortex" module analyzes the prompt and determines which brain region should handle it
-3. **Specialized Responses** - The selected brain region responds with its unique perspective and expertise
+1. **Keep a conversation** — Create, switch, clear, or delete locally saved chats.
+2. **Choose a route** — Use automatic triage or choose the answering region yourself.
+3. **Generate an answer** — Stream a single region's response, or combine perspectives from 2–3 regions.
+4. **Control and improve results** — Stop, retry, or copy answers; submit routing feedback and run evaluations.
 
 ## How It Works
 
@@ -35,17 +42,21 @@ The system includes 14 distinct brain regions, each with specialized capabilitie
 
 ### Architecture
 
+```mermaid
+flowchart TD
+    A[Prompt and recent conversation context] --> B{Routing mode}
+    B -->|Single-region override| D[Selected brain region]
+    B -->|Automatic or collaboration| C[Prefrontal Cortex triage]
+    C --> M{Collaboration enabled?}
+    M -->|No| D
+    M -->|Yes| E[2–3 region perspectives]
+    E --> F[Cortex synthesis]
+    D --> G[Streamed answer]
+    F --> G
+    G --> H[Save completed turn if a conversation is provided]
 ```
-User Prompt
-    ↓
-Prefrontal Cortex (Triage)
-    ↓
-Selected Brain Region
-    ↓
-Azure OpenAI API Call
-    ↓
-Specialized Response
-```
+
+All generation stages use the configured OpenAI or Azure OpenAI model/deployment. A region changes the instructions used for a call; it does not require a separate model deployment. Single-region overrides use one model call, automatic routing uses two, and collaboration uses four or five.
 
 ## Getting Started
 
@@ -56,7 +67,11 @@ Specialized Response
 
 ### Installation
 
-1. Clone the repository
+1. Clone the repository and enter its directory:
+   ```bash
+   git clone https://github.com/DanielBrownAG/TheBrain.git
+   cd TheBrain
+   ```
 2. Install dependencies:
    ```bash
    npm install
@@ -95,7 +110,7 @@ npm run dev
 npm start
 ```
 
-The server will start at `http://localhost:3000`
+Open `http://localhost:3000/brain` after the server starts. The interface is served at `/brain`; `/health` provides a health check.
 
 ## Usage
 
@@ -218,14 +233,14 @@ npm run eval:routing -- --include-feedback --baseline data/evaluations/baseline.
 ## Project Structure
 
 ```
-BasicBrainAI/
+TheBrain/
+├── assets/           # README logo and its generation prompt
 ├── brain.js          # Main application file with all brain regions and routes
 ├── ai-client.js      # Model/provider configuration and generation
 ├── session-store.js  # Local conversation storage
 ├── eval/             # Routing dataset and evaluation command
 ├── test/             # Local tests (no paid API calls)
 ├── package.json      # Dependencies and scripts
-├── public/           # Static assets (if any)
 └── README.md         # This file
 ```
 
@@ -245,16 +260,16 @@ npm run dev
 
 This uses `nodemon` to watch for file changes and automatically restart the server.
 
-Run `npm test` for local integration tests covering JSON responses, incremental streaming, validation, upstream failures, and disconnect cancellation. Tests use a local API fixture and do not require credentials or incur API charges.
+Run `npm test` for local tests covering conversation storage, collaboration, routing controls and feedback, streaming, Stop/Retry/Copy controls, and evaluation reports. Tests use a local API fixture and browser-script simulations; they do not require credentials or incur API charges. They verify application behavior, not the quality of live model responses.
 
 ## Features
 
-✨ **Multi-Specialized AI** - 14 distinct brain regions with unique personalities
-🧠 **Intelligent Routing** - Prefrontal Cortex triage system
-🎨 **Creative & Analytical** - Balances both left and right hemisphere thinking
-📚 **Memory & Context** - Specialized memory and historical recall
-🛡️ **Emotional Intelligence** - Limbic system for emotional understanding
-⚡ **Streaming Responses** - Incremental output through the Responses API
+- **14 specialist regions** with distinct instructions for analysis, creativity, language, memory-related questions, and other domains.
+- **Automatic routing and manual overrides**, with optional collaboration across 2–3 regions.
+- **Persistent conversations**, with the last 10 completed turns supplied as context and up to 50 turns retained locally.
+- **Streaming and response controls**: stop generation, retry without duplicating saved turns, and copy complete or partial answers.
+- **Routing feedback and evaluations**, including baseline comparisons and optional examples from saved corrections.
+- **OpenAI and Azure OpenAI support** through the Responses API, with configurable model or deployment identifiers.
 
 ## Example Prompts
 
