@@ -4,6 +4,11 @@
 
 # BasicBrainAI
 
+[![Node.js ≥20](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=nodedotjs&logoColor=white)](package.json)
+[![License: MIT](https://img.shields.io/github/license/DanielBrownAG/TheBrain)](LICENSE)
+[![Tests](https://img.shields.io/github/actions/workflow/status/DanielBrownAG/TheBrain/tests.yml?branch=main&label=tests)](https://github.com/DanielBrownAG/TheBrain/actions/workflows/tests.yml)
+[![Last commit](https://img.shields.io/github/last-commit/DanielBrownAG/TheBrain)](https://github.com/DanielBrownAG/TheBrain/commits/main/)
+
 A brain-inspired AI prompt router with streaming conversations, specialist collaboration, and routing feedback. Available through a browser interface and a JSON or streaming API, using OpenAI or Azure OpenAI.
 
 ## Description
@@ -234,6 +239,7 @@ npm run eval:routing -- --include-feedback --baseline data/evaluations/baseline.
 
 ```
 TheBrain/
+├── .github/workflows/tests.yml # GitHub Actions test matrix
 ├── assets/           # README logo and its generation prompt
 ├── brain.js          # Main application file with all brain regions and routes
 ├── ai-client.js      # Model/provider configuration and generation
@@ -241,6 +247,7 @@ TheBrain/
 ├── eval/             # Routing dataset and evaluation command
 ├── test/             # Local tests (no paid API calls)
 ├── package.json      # Dependencies and scripts
+├── LICENSE           # MIT license
 └── README.md         # This file
 ```
 
@@ -261,6 +268,8 @@ npm run dev
 This uses `nodemon` to watch for file changes and automatically restart the server.
 
 Run `npm test` for local tests covering conversation storage, collaboration, routing controls and feedback, streaming, Stop/Retry/Copy controls, and evaluation reports. Tests use a local API fixture and browser-script simulations; they do not require credentials or incur API charges. They verify application behavior, not the quality of live model responses.
+
+GitHub Actions runs `npm ci` and `npm test` on Node.js 20, 22, and 24 across Ubuntu and Windows for pushes to `main` and pull requests. You can also start the workflow manually from the [Tests workflow](https://github.com/DanielBrownAG/TheBrain/actions/workflows/tests.yml). No API keys are needed. The README test badge reflects the workflow result on `main`.
 
 ## Features
 
@@ -283,7 +292,7 @@ Try these prompts to see different brain regions in action:
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Daniel Brown.
 
 ## Contributing
 
